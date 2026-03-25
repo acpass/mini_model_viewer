@@ -3,8 +3,10 @@ name = "ac_mini_model_viewer"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+
 [dependencies]
-ash = "0.38.0"
+ash = { version = "0.38.0", features = ["linked"] }
 glm = "0.3.0"
 image = "0.25.10"
 winit = "0.30.13"

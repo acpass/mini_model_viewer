@@ -3,13 +3,14 @@ use ash::vk;
 
 use super::GraphicsBackend;
 use crate::graphics::{GraphicsError, GraphicsResult};
-use std::ffi::CStr;
+use std::{ffi::CStr, ptr::null};
 
 #[derive(Default)]
 pub struct VulkanGraphics {
     entry: Option<ash::Entry>,
     instance: Option<ash::Instance>,
-    device: Option<vk::PhysicalDevice>,
+    physical_device: Option<vk::PhysicalDevice>,
+    logical_device: Option<ash::Device>,
 
     debug_util: Option<ash::ext::debug_utils::Instance>,
     debug_messenger: Option<ash::vk::DebugUtilsMessengerEXT>,
@@ -19,9 +20,27 @@ impl VulkanGraphics {
     fn init_vulkan(&mut self) -> GraphicsResult<()> {
         self.entry = Some(unsafe { ash::Entry::load().expect("No vulkan support") });
         self.init_instance()?;
-        self.init_physical_device()?;
+        self.pick_physical_device()?;
+        self.init_logical_device()?;
+        self.init_queue()?;
         self.setup_debug_messenger();
         Ok(())
+    }
+
+    fn get_instance_extensions() -> Vec<*const i8> {
+        vec![
+            ash::khr::portability_enumeration::NAME.as_ptr(),
+            ash::khr::surface::NAME.as_ptr(),
+            ash::ext::debug_utils::NAME.as_ptr(),
+            ash::khr::get_physical_device_properties2::NAME.as_ptr(),
+        ]
+    }
+
+    fn get_device_extensions() -> Vec<*const i8> {
+        vec![
+            ash::khr::swapchain::NAME.as_ptr(),
+            ash::khr::portability_subset::NAME.as_ptr(),
+        ]
     }
 
     fn init_instance(&mut self) -> GraphicsResult<()> {
@@ -38,11 +57,7 @@ impl VulkanGraphics {
             .application_name(&unsafe { CStr::from_ptr((c"a").as_ptr()) })
             .api_version(ash::vk::make_api_version(0, 1, 0, 0));
 
-        let extensions = [
-            ash::khr::portability_enumeration::NAME.as_ptr(),
-            ash::khr::surface::NAME.as_ptr(),
-            ash::ext::debug_utils::NAME.as_ptr(),
-        ];
+        let extensions = Self::get_instance_extensions();
         let validation_layer_names = Self::get_validation_layer_names();
 
         let create_info = ash::vk::InstanceCreateInfo::default()
@@ -68,10 +83,7 @@ impl VulkanGraphics {
         Ok(())
     }
 
-    fn find_queue_families(
-        &self,
-        device: vk::PhysicalDevice,
-    ) -> GraphicsResult<vk::QueueFamilyProperties> {
+    fn find_queue_families(&self, device: vk::PhysicalDevice) -> GraphicsResult<usize> {
         let properties = unsafe {
             self.instance
                 .as_ref()
@@ -80,7 +92,9 @@ impl VulkanGraphics {
         };
         properties
             .into_iter()
-            .find(|&prop| prop.queue_flags.contains(vk::QueueFlags::GRAPHICS))
+            .enumerate()
+            .find(|(_, prop)| prop.queue_flags.contains(vk::QueueFlags::GRAPHICS))
+            .map(|(index, _)| index)
             .ok_or_else(|| {
                 GraphicsError::VulkanError("Failed to find a graphics queue family".to_string())
             })
@@ -90,7 +104,7 @@ impl VulkanGraphics {
         self.find_queue_families(device).is_ok()
     }
 
-    fn init_physical_device(&mut self) -> GraphicsResult<()> {
+    fn pick_physical_device(&mut self) -> GraphicsResult<()> {
         unsafe { self.instance.as_ref().unwrap().enumerate_physical_devices() }
             .map_err(|e| {
                 GraphicsError::VulkanError(format!("Failed to enumerate physical devices: {:?}", e))
@@ -99,9 +113,54 @@ impl VulkanGraphics {
             .find(|&device| self.is_device_suitable(device))
             .ok_or_else(|| GraphicsError::VulkanError("Failed to find a suitable GPU".to_string()))
             .map(|device| {
-                self.device = Some(device);
+                self.physical_device = Some(device);
                 println!("Selected physical device: {:?}", device);
             })
+    }
+
+    fn init_logical_device(&mut self) -> GraphicsResult<()> {
+        let queue_family_index = self.find_queue_families(self.physical_device.unwrap())?;
+        let device_queue_create_info = [vk::DeviceQueueCreateInfo::default()
+            .queue_family_index(queue_family_index as u32)
+            .queue_priorities(&[1.0])];
+        let device_extensions = Self::get_device_extensions();
+        let create_info = vk::DeviceCreateInfo::default()
+            .queue_create_infos(&device_queue_create_info)
+            .enabled_extension_names(&device_extensions);
+        self.logical_device = Some(unsafe {
+            self.instance
+                .as_ref()
+                .unwrap()
+                .create_device(self.physical_device.unwrap(), &create_info, None)
+                .map_err(|e| {
+                    GraphicsError::VulkanError(
+                        format!("Failed to create logical device, error code: {:?}", e).to_string(),
+                    )
+                })?
+        });
+        Ok(())
+    }
+
+    fn destroy_logical_device(&mut self) {
+        if let Some(device) = &self.logical_device {
+            unsafe {
+                device.destroy_device(None);
+            }
+            self.logical_device = None;
+            println!("Logical device destroyed");
+        }
+    }
+
+    fn init_queue(&mut self) -> GraphicsResult<()> {
+        let queue_family_index = self.find_queue_families(self.physical_device.unwrap())?;
+        let queue = unsafe {
+            self.logical_device
+                .as_ref()
+                .unwrap()
+                .get_device_queue(queue_family_index as u32, 0)
+        };
+        println!("Graphics queue obtained: {:?}", queue);
+        Ok(())
     }
 
     fn destroy_vulkan(&mut self) {
@@ -112,6 +171,7 @@ impl VulkanGraphics {
             self.instance = None;
             println!("Vulkan instance destroyed");
         }
+        self.destroy_logical_device();
         self.destroy_debug_messenger();
     }
 }

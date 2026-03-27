@@ -11,7 +11,7 @@ use ash::{
 };
 
 impl super::VulkanGraphics {
-    pub fn check_validation_layer_support(entry: &ash::Entry, layer: &CStr) -> bool {
+    pub fn check_layer_support(entry: &ash::Entry, layer: &CStr) -> bool {
         let layers = unsafe {
             entry
                 .enumerate_instance_layer_properties()

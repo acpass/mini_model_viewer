@@ -2,7 +2,7 @@ use winit::raw_window_handle;
 
 pub mod vulkan;
 
-pub struct window_handle<
+pub struct WindowHandlePara<
     'a,
     W: raw_window_handle::HasWindowHandle,
     D: raw_window_handle::HasDisplayHandle,
@@ -12,7 +12,7 @@ pub struct window_handle<
 }
 
 impl<'a, W: raw_window_handle::HasWindowHandle, D: raw_window_handle::HasDisplayHandle>
-    window_handle<'a, W, D>
+    WindowHandlePara<'a, W, D>
 {
     pub fn new(window: &'a W, display: &'a D) -> Self {
         Self { window, display }
@@ -25,7 +25,7 @@ pub trait GraphicsBackend {
         D: raw_window_handle::HasDisplayHandle,
     >(
         &mut self,
-        window: &window_handle<W, D>,
+        window: &WindowHandlePara<W, D>,
         width: u32,
         height: u32,
     ) -> GraphicsResult<()>;

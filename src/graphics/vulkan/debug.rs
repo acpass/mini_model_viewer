@@ -1,13 +1,9 @@
-use std::{
-    ffi::{CStr, c_char},
-    ptr::null,
-};
+use std::ffi::{CStr, c_char};
 
 use ash::{
     Entry,
     ext::debug_utils,
-    fuchsia::external_memory,
-    vk::{self, DebugUtilsMessengerEXT, PFN_vkCreateDebugUtilsMessengerEXT},
+    vk::{self, DebugUtilsMessengerEXT},
 };
 
 impl super::VulkanGraphics {
@@ -41,14 +37,14 @@ impl super::VulkanGraphics {
         let message_id_number = callback_data.message_id_number;
         let message_id_name = unsafe {
             if callback_data.p_message_id_name.is_null() {
-                CStr::from_bytes_with_nul(b"<no message id name>\0").unwrap()
+                CStr::from_ptr(c"<no message id name>".as_ptr())
             } else {
                 CStr::from_ptr(callback_data.p_message_id_name)
             }
         };
         let message = unsafe {
             if callback_data.p_message.is_null() {
-                CStr::from_bytes_with_nul(b"<no message>\0").unwrap()
+                CStr::from_ptr(c"<no message>".as_ptr())
             } else {
                 CStr::from_ptr(callback_data.p_message)
             }
@@ -68,7 +64,7 @@ impl super::VulkanGraphics {
         let entry = Entry::linked();
         self.debug_util = Some(debug_utils::Instance::new(
             &entry,
-            &self.instance.as_ref().unwrap(),
+            self.instance.as_ref().unwrap(),
         ));
         let create_info = vk::DebugUtilsMessengerCreateInfoEXT::default()
             .message_severity(

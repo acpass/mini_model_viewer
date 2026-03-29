@@ -34,7 +34,7 @@ impl<G: GraphicsBackend> ApplicationHandler for App<G> {
         let window = self.window.as_ref().unwrap();
         let wh = window.window_handle().unwrap();
         let dh = window.display_handle().unwrap();
-        let window_handle = graphics::window_handle::new(&wh, &dh);
+        let window_handle = graphics::WindowHandlePara::new(&wh, &dh);
         self.graphics
             .can_create_surface(&window_handle, 800, 600)
             .inspect_err(|e| println!("Failed to create graphics surface: {:?}", e))
@@ -62,16 +62,15 @@ impl<G: GraphicsBackend> ApplicationHandler for App<G> {
                 println!("Window resized to {}x{}", size.width, size.height);
             }
             WindowEvent::KeyboardInput {
-                device_id,
+                device_id: _,
                 event: keyboard_event,
-                is_synthetic,
-            } => match keyboard_event.physical_key {
-                PhysicalKey::Code(KeyCode::Escape) => {
+                is_synthetic: _,
+            } => {
+                if let PhysicalKey::Code(KeyCode::Escape) = keyboard_event.physical_key {
                     println!("Escape key pressed, exiting");
                     event_loop.exit();
                 }
-                _ => {}
-            },
+            }
             _ => {}
         }
     }

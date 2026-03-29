@@ -23,7 +23,7 @@ impl VulkanGraphics {
         D: raw_window_handle::HasDisplayHandle,
     >(
         &mut self,
-        handle: &super::window_handle<W, D>,
+        handle: &super::WindowHandlePara<W, D>,
     ) -> GraphicsResult<()> {
         self.entry = Some(unsafe { ash::Entry::load().expect("No vulkan support") });
         self.init_instance(handle)?;
@@ -34,12 +34,13 @@ impl VulkanGraphics {
         Ok(())
     }
 
+    #[allow(dead_code)]
     fn init_surface<
         W: raw_window_handle::HasWindowHandle,
         D: raw_window_handle::HasDisplayHandle,
     >(
         &mut self,
-        handle: &super::window_handle<W, D>,
+        handle: &super::WindowHandlePara<W, D>,
     ) -> GraphicsResult<()> {
         let surface = unsafe {
             ash_window::create_surface(
@@ -79,19 +80,17 @@ impl VulkanGraphics {
         D: raw_window_handle::HasDisplayHandle,
     >(
         &mut self,
-        handle: &super::window_handle<W, D>,
+        handle: &super::WindowHandlePara<W, D>,
     ) -> GraphicsResult<()> {
-        if !Self::check_layer_support(
-            &self.entry.as_ref().unwrap(),
-            c"VK_LAYER_KHRONOS_validation",
-        ) {
+        if !Self::check_layer_support(self.entry.as_ref().unwrap(), c"VK_LAYER_KHRONOS_validation")
+        {
             return Err(GraphicsError::VulkanError(
                 "Validation layer VK_LAYER_KHRONOS_validation not found".to_string(),
             ));
         }
 
         let app_info = ash::vk::ApplicationInfo::default()
-            .application_name(&unsafe { CStr::from_ptr((c"a").as_ptr()) })
+            .application_name(unsafe { CStr::from_ptr((c"a").as_ptr()) })
             .api_version(ash::vk::make_api_version(0, 1, 0, 0));
 
         let extensions = Self::get_instance_extensions(handle.display);
@@ -219,7 +218,7 @@ impl GraphicsBackend for VulkanGraphics {
         D: raw_window_handle::HasDisplayHandle,
     >(
         &mut self,
-        window: &super::window_handle<W, D>,
+        window: &super::WindowHandlePara<W, D>,
         width: u32,
         height: u32,
     ) -> GraphicsResult<()> {

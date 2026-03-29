@@ -1,9 +1,10 @@
 mod debug;
 use ash::vk;
+use winit::raw_window_handle::{self, HasDisplayHandle};
 
 use super::GraphicsBackend;
 use crate::graphics::{GraphicsError, GraphicsResult};
-use std::{ffi::CStr, ptr::null};
+use std::ffi::CStr;
 
 #[derive(Default)]
 pub struct VulkanGraphics {
@@ -17,23 +18,53 @@ pub struct VulkanGraphics {
 }
 
 impl VulkanGraphics {
-    fn init_vulkan(&mut self) -> GraphicsResult<()> {
+    fn init_vulkan<
+        W: raw_window_handle::HasWindowHandle,
+        D: raw_window_handle::HasDisplayHandle,
+    >(
+        &mut self,
+        handle: &super::window_handle<W, D>,
+    ) -> GraphicsResult<()> {
         self.entry = Some(unsafe { ash::Entry::load().expect("No vulkan support") });
-        self.init_instance()?;
+        self.init_instance(handle)?;
+        self.setup_debug_messenger();
         self.pick_physical_device()?;
         self.init_logical_device()?;
         self.init_queue()?;
-        self.setup_debug_messenger();
         Ok(())
     }
 
-    fn get_instance_extensions() -> Vec<*const i8> {
-        vec![
-            ash::khr::portability_enumeration::NAME.as_ptr(),
-            ash::khr::surface::NAME.as_ptr(),
-            ash::ext::debug_utils::NAME.as_ptr(),
-            ash::khr::get_physical_device_properties2::NAME.as_ptr(),
-        ]
+    fn init_surface<
+        W: raw_window_handle::HasWindowHandle,
+        D: raw_window_handle::HasDisplayHandle,
+    >(
+        &mut self,
+        handle: &super::window_handle<W, D>,
+    ) -> GraphicsResult<()> {
+        let surface = unsafe {
+            ash_window::create_surface(
+                self.entry.as_ref().unwrap(),
+                self.instance.as_ref().unwrap(),
+                handle.display.display_handle().unwrap().as_raw(),
+                handle.window.window_handle().unwrap().as_raw(),
+                None,
+            )
+        }
+        .map_err(|e| GraphicsError::VulkanError(format!("Failed to create surface: {:?}", e)))?;
+        println!("Vulkan surface created successfully: {:?}", surface);
+        Ok(())
+    }
+
+    fn get_instance_extensions(display_handle: &dyn HasDisplayHandle) -> Vec<*const i8> {
+        let mut extensions = ash_window::enumerate_required_extensions(
+            display_handle.display_handle().unwrap().as_raw(),
+        )
+        .unwrap()
+        .to_vec();
+        extensions.push(ash::khr::portability_enumeration::NAME.as_ptr());
+        extensions.push(ash::ext::debug_utils::NAME.as_ptr());
+        extensions.push(ash::khr::get_physical_device_properties2::NAME.as_ptr());
+        extensions
     }
 
     fn get_device_extensions() -> Vec<*const i8> {
@@ -43,7 +74,13 @@ impl VulkanGraphics {
         ]
     }
 
-    fn init_instance(&mut self) -> GraphicsResult<()> {
+    fn init_instance<
+        W: raw_window_handle::HasWindowHandle,
+        D: raw_window_handle::HasDisplayHandle,
+    >(
+        &mut self,
+        handle: &super::window_handle<W, D>,
+    ) -> GraphicsResult<()> {
         if !Self::check_layer_support(
             &self.entry.as_ref().unwrap(),
             c"VK_LAYER_KHRONOS_validation",
@@ -57,7 +94,7 @@ impl VulkanGraphics {
             .application_name(&unsafe { CStr::from_ptr((c"a").as_ptr()) })
             .api_version(ash::vk::make_api_version(0, 1, 0, 0));
 
-        let extensions = Self::get_instance_extensions();
+        let extensions = Self::get_instance_extensions(handle.display);
         let validation_layer_names = Self::get_validation_layer_names();
 
         let create_info = ash::vk::InstanceCreateInfo::default()
@@ -164,6 +201,8 @@ impl VulkanGraphics {
     }
 
     fn destroy_vulkan(&mut self) {
+        self.destroy_logical_device();
+        self.destroy_debug_messenger();
         if let Some(instance) = &self.instance {
             unsafe {
                 instance.destroy_instance(None);
@@ -171,14 +210,20 @@ impl VulkanGraphics {
             self.instance = None;
             println!("Vulkan instance destroyed");
         }
-        self.destroy_logical_device();
-        self.destroy_debug_messenger();
     }
 }
 
 impl GraphicsBackend for VulkanGraphics {
-    fn can_create_surface(&mut self, width: u32, height: u32) -> GraphicsResult<()> {
-        self.init_vulkan()?;
+    fn can_create_surface<
+        W: raw_window_handle::HasWindowHandle,
+        D: raw_window_handle::HasDisplayHandle,
+    >(
+        &mut self,
+        window: &super::window_handle<W, D>,
+        width: u32,
+        height: u32,
+    ) -> GraphicsResult<()> {
+        self.init_vulkan(window)?;
         println!("Vulkan can create surface with size {}x{}", width, height);
         Ok(())
     }

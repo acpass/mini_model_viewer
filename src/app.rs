@@ -3,10 +3,11 @@ use winit::{
     event::WindowEvent,
     event_loop,
     keyboard::{KeyCode, PhysicalKey},
+    raw_window_handle::{HasDisplayHandle, HasWindowHandle},
     window::WindowAttributes,
 };
 
-use crate::graphics::GraphicsBackend;
+use crate::graphics::{self, GraphicsBackend};
 
 pub struct App<G: GraphicsBackend> {
     graphics: G,
@@ -29,8 +30,13 @@ impl<G: GraphicsBackend> ApplicationHandler for App<G> {
                 .create_window(WindowAttributes::default().with_title("AC Mini Model Viewer"))
                 .unwrap(),
         );
+
+        let window = self.window.as_ref().unwrap();
+        let wh = window.window_handle().unwrap();
+        let dh = window.display_handle().unwrap();
+        let window_handle = graphics::window_handle::new(&wh, &dh);
         self.graphics
-            .can_create_surface(800, 600)
+            .can_create_surface(&window_handle, 800, 600)
             .inspect_err(|e| println!("Failed to create graphics surface: {:?}", e))
             .unwrap();
     }

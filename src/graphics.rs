@@ -1,7 +1,34 @@
+use winit::raw_window_handle;
+
 pub mod vulkan;
 
+pub struct window_handle<
+    'a,
+    W: raw_window_handle::HasWindowHandle,
+    D: raw_window_handle::HasDisplayHandle,
+> {
+    pub window: &'a W,
+    pub display: &'a D,
+}
+
+impl<'a, W: raw_window_handle::HasWindowHandle, D: raw_window_handle::HasDisplayHandle>
+    window_handle<'a, W, D>
+{
+    pub fn new(window: &'a W, display: &'a D) -> Self {
+        Self { window, display }
+    }
+}
+
 pub trait GraphicsBackend {
-    fn can_create_surface(&mut self, width: u32, height: u32) -> GraphicsResult<()>;
+    fn can_create_surface<
+        W: raw_window_handle::HasWindowHandle,
+        D: raw_window_handle::HasDisplayHandle,
+    >(
+        &mut self,
+        window: &window_handle<W, D>,
+        width: u32,
+        height: u32,
+    ) -> GraphicsResult<()>;
     fn draw(&self);
     fn clear(&mut self);
     fn resize(&mut self, width: u32, height: u32);

@@ -62,17 +62,33 @@ impl VulkanGraphics {
         )
         .unwrap()
         .to_vec();
-        extensions.push(ash::khr::portability_enumeration::NAME.as_ptr());
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            extensions.push(ash::khr::portability_enumeration::NAME.as_ptr());
+        }
         extensions.push(ash::ext::debug_utils::NAME.as_ptr());
         extensions.push(ash::khr::get_physical_device_properties2::NAME.as_ptr());
         extensions
     }
 
     fn get_device_extensions() -> Vec<*const i8> {
-        vec![
-            ash::khr::swapchain::NAME.as_ptr(),
-            ash::khr::portability_subset::NAME.as_ptr(),
-        ]
+        #[allow(unused_mut)]
+        let mut extensions = vec![ash::khr::swapchain::NAME.as_ptr()];
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            extensions.push(ash::khr::portability_subset::NAME.as_ptr());
+        }
+        extensions
+    }
+
+    fn get_instance_features_flags() -> ash::vk::InstanceCreateFlags {
+        #[allow(unused_mut)]
+        let mut flags = ash::vk::InstanceCreateFlags::empty();
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            flags = flags | ash::vk::InstanceCreateFlags::ENUMERATE_PORTABILITY_KHR;
+        }
+        flags
     }
 
     fn init_instance<
@@ -100,7 +116,7 @@ impl VulkanGraphics {
             .application_info(&app_info)
             .enabled_extension_names(&extensions) // needed by MoltenVK on macOS
             .enabled_layer_names(&validation_layer_names)
-            .flags(ash::vk::InstanceCreateFlags::ENUMERATE_PORTABILITY_KHR);
+            .flags(Self::get_instance_features_flags());
         let allocation_callbacks = None;
 
         self.instance = Some(

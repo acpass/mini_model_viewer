@@ -4,14 +4,29 @@ use winit::raw_window_handle::{self, HasDisplayHandle};
 
 use super::GraphicsBackend;
 use crate::graphics::{GraphicsError, GraphicsResult};
-use std::ffi::CStr;
+use std::{collections::HashSet, ffi::CStr};
+
+struct QueueFamilyIndices {
+    graphics_family: Option<u32>,
+    present_family: Option<u32>,
+}
+
+impl QueueFamilyIndices {
+    fn is_complete(&self) -> bool {
+        self.graphics_family.is_some() && self.present_family.is_some()
+    }
+}
 
 #[derive(Default)]
 pub struct VulkanGraphics {
     entry: Option<ash::Entry>,
     instance: Option<ash::Instance>,
+    surface_loader: Option<ash::khr::surface::Instance>,
+
     physical_device: Option<vk::PhysicalDevice>,
     logical_device: Option<ash::Device>,
+    surface: Option<vk::SurfaceKHR>,
+    queues: Vec<vk::Queue>,
 
     debug_util: Option<ash::ext::debug_utils::Instance>,
     debug_messenger: Option<ash::vk::DebugUtilsMessengerEXT>,
@@ -27,6 +42,7 @@ impl VulkanGraphics {
     ) -> GraphicsResult<()> {
         self.entry = Some(unsafe { ash::Entry::load().expect("No vulkan support") });
         self.init_instance(handle)?;
+        self.init_surface(handle)?;
         self.setup_debug_messenger();
         self.pick_physical_device()?;
         self.init_logical_device()?;
@@ -34,7 +50,6 @@ impl VulkanGraphics {
         Ok(())
     }
 
-    #[allow(dead_code)]
     fn init_surface<
         W: raw_window_handle::HasWindowHandle,
         D: raw_window_handle::HasDisplayHandle,
@@ -42,17 +57,24 @@ impl VulkanGraphics {
         &mut self,
         handle: &super::WindowHandlePara<W, D>,
     ) -> GraphicsResult<()> {
-        let surface = unsafe {
-            ash_window::create_surface(
-                self.entry.as_ref().unwrap(),
-                self.instance.as_ref().unwrap(),
-                handle.display.display_handle().unwrap().as_raw(),
-                handle.window.window_handle().unwrap().as_raw(),
-                None,
-            )
-        }
-        .map_err(|e| GraphicsError::VulkanError(format!("Failed to create surface: {:?}", e)))?;
-        println!("Vulkan surface created successfully: {:?}", surface);
+        self.surface = Some(
+            unsafe {
+                ash_window::create_surface(
+                    self.entry.as_ref().unwrap(),
+                    self.instance.as_ref().unwrap(),
+                    handle.display.display_handle().unwrap().as_raw(),
+                    handle.window.window_handle().unwrap().as_raw(),
+                    None,
+                )
+            }
+            .map_err(|e| {
+                GraphicsError::VulkanError(format!("Failed to create surface: {:?}", e))
+            })?,
+        );
+        println!(
+            "Vulkan surface created successfully: {:?}",
+            self.surface.unwrap()
+        );
         Ok(())
     }
 
@@ -132,28 +154,60 @@ impl VulkanGraphics {
             "Vulkan instance created successfully: {:?}",
             self.instance.as_ref().unwrap().handle()
         );
+
+        self.surface_loader = Some(ash::khr::surface::Instance::new(
+            self.entry.as_ref().unwrap(),
+            self.instance.as_ref().unwrap(),
+        ));
         Ok(())
     }
 
-    fn find_queue_families(&self, device: vk::PhysicalDevice) -> GraphicsResult<usize> {
+    fn find_queue_family_indice(
+        &self,
+        device: vk::PhysicalDevice,
+        surface: vk::SurfaceKHR,
+        surface_loader: &ash::khr::surface::Instance,
+    ) -> QueueFamilyIndices {
         let properties = unsafe {
             self.instance
                 .as_ref()
                 .unwrap()
                 .get_physical_device_queue_family_properties(device)
         };
-        properties
-            .into_iter()
+        let graphics_family = properties
+            .iter()
             .enumerate()
             .find(|(_, prop)| prop.queue_flags.contains(vk::QueueFlags::GRAPHICS))
-            .map(|(index, _)| index)
-            .ok_or_else(|| {
-                GraphicsError::VulkanError("Failed to find a graphics queue family".to_string())
+            .map(|(index, _)| index as u32);
+        let present_family = properties
+            .iter()
+            .enumerate()
+            .find(|(index, _)| {
+                unsafe {
+                    surface_loader.get_physical_device_surface_support(
+                        device,
+                        *index as u32,
+                        surface,
+                    )
+                }
+                .unwrap_or(false)
             })
+            .map(|(index, _)| index as u32);
+        let indices = QueueFamilyIndices {
+            graphics_family,
+            present_family,
+        };
+        indices
     }
 
-    fn is_device_suitable(&self, device: vk::PhysicalDevice) -> bool {
-        self.find_queue_families(device).is_ok()
+    fn is_device_suitable(
+        &self,
+        device: vk::PhysicalDevice,
+        surface: vk::SurfaceKHR,
+        surface_loader: &ash::khr::surface::Instance,
+    ) -> bool {
+        self.find_queue_family_indice(device, surface, surface_loader)
+            .is_complete()
     }
 
     fn pick_physical_device(&mut self) -> GraphicsResult<()> {
@@ -162,7 +216,13 @@ impl VulkanGraphics {
                 GraphicsError::VulkanError(format!("Failed to enumerate physical devices: {:?}", e))
             })?
             .into_iter()
-            .find(|&device| self.is_device_suitable(device))
+            .find(|&device| {
+                self.is_device_suitable(
+                    device,
+                    self.surface.unwrap(),
+                    self.surface_loader.as_ref().unwrap(),
+                )
+            })
             .ok_or_else(|| GraphicsError::VulkanError("Failed to find a suitable GPU".to_string()))
             .map(|device| {
                 self.physical_device = Some(device);
@@ -171,10 +231,27 @@ impl VulkanGraphics {
     }
 
     fn init_logical_device(&mut self) -> GraphicsResult<()> {
-        let queue_family_index = self.find_queue_families(self.physical_device.unwrap())?;
-        let device_queue_create_info = [vk::DeviceQueueCreateInfo::default()
-            .queue_family_index(queue_family_index as u32)
-            .queue_priorities(&[1.0])];
+        // retrieve queue family indices for graphics and presentation
+        let queue_family_index = self.find_queue_family_indice(
+            self.physical_device.unwrap(),
+            self.surface.unwrap(),
+            self.surface_loader.as_ref().unwrap(),
+        );
+        queue_family_index
+            .is_complete()
+            .then(|| ())
+            .ok_or_else(|| {
+                GraphicsError::VulkanError("Failed to find suitable queue families".to_string())
+            })?;
+        let unique_queue_families = HashSet::from([
+            queue_family_index.graphics_family.unwrap(),
+            queue_family_index.present_family.unwrap(),
+        ]);
+        let device_queue_create_info = Vec::from_iter(unique_queue_families.iter().map(|&index| {
+            vk::DeviceQueueCreateInfo::default()
+                .queue_family_index(index)
+                .queue_priorities(&[1.0])
+        }));
         let device_extensions = Self::get_device_extensions();
         let create_info = vk::DeviceCreateInfo::default()
             .queue_create_infos(&device_queue_create_info)
@@ -204,14 +281,26 @@ impl VulkanGraphics {
     }
 
     fn init_queue(&mut self) -> GraphicsResult<()> {
-        let queue_family_index = self.find_queue_families(self.physical_device.unwrap())?;
-        let queue = unsafe {
-            self.logical_device
-                .as_ref()
-                .unwrap()
-                .get_device_queue(queue_family_index as u32, 0)
-        };
-        println!("Graphics queue obtained: {:?}", queue);
+        let queue_family_index = self.find_queue_family_indice(
+            self.physical_device.unwrap(),
+            self.surface.unwrap(),
+            self.surface_loader.as_ref().unwrap(),
+        );
+        let indice_set = HashSet::from([
+            queue_family_index.graphics_family.unwrap(),
+            queue_family_index.present_family.unwrap(),
+        ]);
+        for &index in &indice_set {
+            println!("Queue family index: {}", index);
+            let queue = unsafe {
+                self.logical_device
+                    .as_ref()
+                    .unwrap()
+                    .get_device_queue(index, 0)
+            };
+            self.queues.push(queue);
+            println!("Graphics queue obtained: {:?}", queue);
+        }
         Ok(())
     }
 

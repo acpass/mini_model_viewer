@@ -42,6 +42,8 @@ pub struct VulkanGraphics {
     swap_chain_present_mode: Option<vk::PresentModeKHR>,
     swap_chain_extent: Option<vk::Extent2D>,
 
+    image_views: Vec<vk::ImageView>,
+
     debug_util: Option<ash::ext::debug_utils::Instance>,
     debug_messenger: Option<ash::vk::DebugUtilsMessengerEXT>,
 }
@@ -64,6 +66,7 @@ impl VulkanGraphics {
         self.init_logical_device()?;
         self.init_queue()?;
         self.create_swap_chain(width, height)?;
+        self.create_image_views()?;
         Ok(())
     }
 
@@ -530,19 +533,6 @@ impl VulkanGraphics {
         Ok(())
     }
 
-    fn destroy_vulkan(&mut self) {
-        self.destroy_swap_chain();
-        self.destroy_logical_device();
-        self.destroy_debug_messenger();
-        if let Some(instance) = &self.instance {
-            unsafe {
-                instance.destroy_instance(None);
-            }
-            self.instance = None;
-            println!("Vulkan instance destroyed");
-        }
-    }
-
     fn destroy_swap_chain(&mut self) {
         self.swap_chain_format = None;
         self.swap_chain_present_mode = None;
@@ -556,6 +546,65 @@ impl VulkanGraphics {
                     .destroy_swapchain(swap_chain, None);
             }
             self.swap_chain = None;
+        }
+    }
+
+    fn create_image_views(&mut self) -> GraphicsResult<()> {
+        // Placeholder for image view creation logic
+        for &image in &self.images {
+            let create_info = vk::ImageViewCreateInfo::default()
+                .image(image)
+                .view_type(vk::ImageViewType::TYPE_2D)
+                .format(self.swap_chain_format.unwrap().format)
+                .components(vk::ComponentMapping {
+                    r: vk::ComponentSwizzle::IDENTITY,
+                    g: vk::ComponentSwizzle::IDENTITY,
+                    b: vk::ComponentSwizzle::IDENTITY,
+                    a: vk::ComponentSwizzle::IDENTITY,
+                })
+                .subresource_range(vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                });
+            let image_view = unsafe {
+                self.logical_device
+                    .as_ref()
+                    .unwrap()
+                    .create_image_view(&create_info, None)
+            }
+            .map_err(|e| {
+                GraphicsError::VulkanError(format!("Failed to create image view: {:?}", e))
+            })?;
+            self.image_views.push(image_view);
+        }
+        Ok(())
+    }
+
+    fn destroy_image_views(&mut self) {
+        for &image_view in &self.image_views {
+            unsafe {
+                self.logical_device
+                    .as_ref()
+                    .unwrap()
+                    .destroy_image_view(image_view, None);
+            }
+        }
+    }
+
+    fn destroy_vulkan(&mut self) {
+        self.destroy_image_views();
+        self.destroy_swap_chain();
+        self.destroy_logical_device();
+        self.destroy_debug_messenger();
+        if let Some(instance) = &self.instance {
+            unsafe {
+                instance.destroy_instance(None);
+            }
+            self.instance = None;
+            println!("Vulkan instance destroyed");
         }
     }
 }

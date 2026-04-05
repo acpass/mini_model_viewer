@@ -17,6 +17,13 @@ impl QueueFamilyIndices {
     }
 }
 
+struct SwapChainSupportDetails {
+    #[allow(dead_code)]
+    capabilities: vk::SurfaceCapabilitiesKHR,
+    formats: Vec<vk::SurfaceFormatKHR>,
+    present_modes: Vec<vk::PresentModeKHR>,
+}
+
 #[derive(Default)]
 pub struct VulkanGraphics {
     entry: Option<ash::Entry>,
@@ -91,6 +98,25 @@ impl VulkanGraphics {
         extensions.push(ash::ext::debug_utils::NAME.as_ptr());
         extensions.push(ash::khr::get_physical_device_properties2::NAME.as_ptr());
         extensions
+    }
+
+    fn check_device_extension_support(
+        instance: &ash::Instance,
+        device: vk::PhysicalDevice,
+        required_extensions: &[&CStr],
+    ) -> bool {
+        let available_extensions = unsafe {
+            instance
+                .enumerate_device_extension_properties(device)
+                .expect("Failed to enumerate device extension properties")
+        };
+        let available_extension_names: HashSet<&CStr> = available_extensions
+            .iter()
+            .map(|ext| unsafe { CStr::from_ptr(ext.extension_name.as_ptr()) })
+            .collect();
+        required_extensions
+            .iter()
+            .all(|&req_ext| available_extension_names.contains(req_ext))
     }
 
     fn get_device_extensions() -> Vec<*const i8> {
@@ -193,11 +219,55 @@ impl VulkanGraphics {
                 .unwrap_or(false)
             })
             .map(|(index, _)| index as u32);
-        let indices = QueueFamilyIndices {
+        QueueFamilyIndices {
             graphics_family,
             present_family,
-        };
-        indices
+        }
+    }
+
+    fn get_swap_chain_details(
+        &self,
+        device: vk::PhysicalDevice,
+        surface: vk::SurfaceKHR,
+        surface_loader: &ash::khr::surface::Instance,
+    ) -> GraphicsResult<SwapChainSupportDetails> {
+        let capabilities = unsafe {
+            surface_loader
+                .get_physical_device_surface_capabilities(device, surface)
+                .map_err(|e| {
+                    GraphicsError::VulkanError(format!(
+                        "Failed to get swap chain capabilities: {:?}",
+                        e
+                    ))
+                })
+        }?;
+
+        let formats = unsafe {
+            surface_loader
+                .get_physical_device_surface_formats(device, surface)
+                .map_err(|e| {
+                    GraphicsError::VulkanError(format!(
+                        "Failed to get swap chain surface formats: {:?}",
+                        e
+                    ))
+                })
+        }?;
+
+        let present_modes = unsafe {
+            surface_loader
+                .get_physical_device_surface_present_modes(device, surface)
+                .map_err(|e| {
+                    GraphicsError::VulkanError(format!(
+                        "Failed to get swap chain present modes: {:?}",
+                        e
+                    ))
+                })
+        }?;
+        Ok(SwapChainSupportDetails {
+            capabilities,
+            formats,
+            present_modes,
+        })
     }
 
     fn is_device_suitable(
@@ -206,8 +276,28 @@ impl VulkanGraphics {
         surface: vk::SurfaceKHR,
         surface_loader: &ash::khr::surface::Instance,
     ) -> bool {
-        self.find_queue_family_indice(device, surface, surface_loader)
-            .is_complete()
+        let queue_family_complete = self
+            .find_queue_family_indice(device, surface, surface_loader)
+            .is_complete();
+        let extensions_supported = Self::check_device_extension_support(
+            self.instance.as_ref().unwrap(),
+            device,
+            Self::get_device_extensions()
+                .iter()
+                .map(|&ext| unsafe { CStr::from_ptr(ext) })
+                .collect::<Vec<_>>()
+                .as_slice(),
+        );
+        let swap_chain_adequate = if extensions_supported {
+            match self.get_swap_chain_details(device, surface, surface_loader) {
+                Ok(details) => !details.formats.is_empty() && !details.present_modes.is_empty(),
+                Err(_) => false,
+            }
+        } else {
+            false
+        };
+
+        queue_family_complete && extensions_supported && swap_chain_adequate
     }
 
     fn pick_physical_device(&mut self) -> GraphicsResult<()> {
@@ -239,7 +329,7 @@ impl VulkanGraphics {
         );
         queue_family_index
             .is_complete()
-            .then(|| ())
+            .then_some(())
             .ok_or_else(|| {
                 GraphicsError::VulkanError("Failed to find suitable queue families".to_string())
             })?;

@@ -1,5 +1,6 @@
 use winit::{
     application::ApplicationHandler,
+    dpi,
     event::WindowEvent,
     event_loop,
     keyboard::{KeyCode, PhysicalKey},
@@ -27,7 +28,11 @@ impl<G: GraphicsBackend> ApplicationHandler for App<G> {
     fn resumed(&mut self, event_loop: &event_loop::ActiveEventLoop) {
         self.window = Some(
             event_loop
-                .create_window(WindowAttributes::default().with_title("AC Mini Model Viewer"))
+                .create_window(
+                    WindowAttributes::default()
+                        .with_title("AC Mini Model Viewer")
+                        .with_inner_size(dpi::PhysicalSize::new(800, 600)),
+                )
                 .unwrap(),
         );
 
@@ -35,8 +40,9 @@ impl<G: GraphicsBackend> ApplicationHandler for App<G> {
         let wh = window.window_handle().unwrap();
         let dh = window.display_handle().unwrap();
         let window_handle = graphics::WindowHandlePara::new(&wh, &dh);
+        let size = window.inner_size();
         self.graphics
-            .can_create_surface(&window_handle, 800, 600)
+            .can_create_surface(&window_handle, size.width, size.height)
             .inspect_err(|e| println!("Failed to create graphics surface: {:?}", e))
             .unwrap();
     }
@@ -57,9 +63,13 @@ impl<G: GraphicsBackend> ApplicationHandler for App<G> {
                 self.graphics.draw();
                 println!("Window redraw requested, window id: {:?}", window_id);
             }
-            WindowEvent::Resized(size) => {
-                self.graphics.resize(size.width, size.height);
-                println!("Window resized to {}x{}", size.width, size.height);
+            WindowEvent::Resized(_) => {
+                let inner_size = self.window.as_ref().unwrap().inner_size();
+                self.graphics.resize(inner_size.width, inner_size.height);
+                println!(
+                    "Window resized to {}x{}",
+                    inner_size.width, inner_size.height
+                );
             }
             WindowEvent::KeyboardInput {
                 device_id: _,

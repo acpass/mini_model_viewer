@@ -68,8 +68,8 @@ impl super::VulkanGraphics {
         ));
         let create_info = vk::DebugUtilsMessengerCreateInfoEXT::default()
             .message_severity(
-                vk::DebugUtilsMessageSeverityFlagsEXT::VERBOSE
-                    | vk::DebugUtilsMessageSeverityFlagsEXT::WARNING
+                // vk::DebugUtilsMessageSeverityFlagsEXT::VERBOSE
+                vk::DebugUtilsMessageSeverityFlagsEXT::WARNING
                     | vk::DebugUtilsMessageSeverityFlagsEXT::ERROR,
             )
             .message_type(

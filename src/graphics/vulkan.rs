@@ -29,11 +29,18 @@ pub struct VulkanGraphics {
     entry: Option<ash::Entry>,
     instance: Option<ash::Instance>,
     surface_loader: Option<ash::khr::surface::Instance>,
+    swapchain_loader: Option<ash::khr::swapchain::Device>,
 
     physical_device: Option<vk::PhysicalDevice>,
     logical_device: Option<ash::Device>,
     surface: Option<vk::SurfaceKHR>,
     queues: Vec<vk::Queue>,
+
+    swap_chain: Option<vk::SwapchainKHR>,
+    images: Vec<vk::Image>,
+    swap_chain_format: Option<vk::SurfaceFormatKHR>,
+    swap_chain_present_mode: Option<vk::PresentModeKHR>,
+    swap_chain_extent: Option<vk::Extent2D>,
 
     debug_util: Option<ash::ext::debug_utils::Instance>,
     debug_messenger: Option<ash::vk::DebugUtilsMessengerEXT>,
@@ -46,14 +53,17 @@ impl VulkanGraphics {
     >(
         &mut self,
         handle: &super::WindowHandlePara<W, D>,
+        width: u32,
+        height: u32,
     ) -> GraphicsResult<()> {
         self.entry = Some(unsafe { ash::Entry::load().expect("No vulkan support") });
         self.init_instance(handle)?;
-        self.init_surface(handle)?;
         self.setup_debug_messenger();
+        self.init_surface(handle)?;
         self.pick_physical_device()?;
         self.init_logical_device()?;
         self.init_queue()?;
+        self.create_swap_chain(width, height)?;
         Ok(())
     }
 
@@ -394,7 +404,134 @@ impl VulkanGraphics {
         Ok(())
     }
 
+    fn choose_swap_chain_format(
+        available_formats: &[vk::SurfaceFormatKHR],
+    ) -> vk::SurfaceFormatKHR {
+        available_formats
+            .iter()
+            .cloned()
+            .find(|format| {
+                format.format == vk::Format::B8G8R8A8_SRGB
+                    && format.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR
+            })
+            .unwrap_or_else(|| available_formats[0])
+    }
+
+    fn choose_swap_chain_present_mode(
+        available_present_modes: &[vk::PresentModeKHR],
+    ) -> vk::PresentModeKHR {
+        available_present_modes
+            .iter()
+            .cloned()
+            .find(|&mode| mode == vk::PresentModeKHR::MAILBOX)
+            .unwrap_or(vk::PresentModeKHR::FIFO)
+    }
+
+    fn choose_swap_chain_extent(
+        capabilities: &vk::SurfaceCapabilitiesKHR,
+        width: u32,
+        height: u32,
+    ) -> vk::Extent2D {
+        if capabilities.current_extent.width != u32::MAX {
+            capabilities.current_extent
+        } else {
+            vk::Extent2D {
+                width: width.clamp(
+                    capabilities.min_image_extent.width,
+                    capabilities.max_image_extent.width,
+                ),
+                height: height.clamp(
+                    capabilities.min_image_extent.height,
+                    capabilities.max_image_extent.height,
+                ),
+            }
+        }
+    }
+
+    fn create_swap_chain(&mut self, width: u32, height: u32) -> GraphicsResult<()> {
+        let swap_chain_support = self.get_swap_chain_details(
+            self.physical_device.unwrap(),
+            self.surface.unwrap(),
+            self.surface_loader.as_ref().unwrap(),
+        )?;
+        let surface_format = Self::choose_swap_chain_format(&swap_chain_support.formats);
+        let present_mode = Self::choose_swap_chain_present_mode(&swap_chain_support.present_modes);
+        let extent =
+            Self::choose_swap_chain_extent(&swap_chain_support.capabilities, width, height);
+
+        let image_count = swap_chain_support.capabilities.min_image_count + 1;
+        let image_count = if swap_chain_support.capabilities.max_image_count > 0 {
+            image_count.min(swap_chain_support.capabilities.max_image_count)
+        } else {
+            image_count
+        };
+
+        let mut create_info = vk::SwapchainCreateInfoKHR::default()
+            .surface(self.surface.unwrap())
+            .min_image_count(image_count)
+            .image_format(surface_format.format)
+            .image_color_space(surface_format.color_space)
+            .image_extent(extent)
+            .image_array_layers(1)
+            .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT)
+            .pre_transform(swap_chain_support.capabilities.current_transform)
+            .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
+            .present_mode(present_mode)
+            .clipped(true);
+
+        let queue_family_index = self.find_queue_family_indice(
+            self.physical_device.unwrap(),
+            self.surface.unwrap(),
+            self.surface_loader.as_ref().unwrap(),
+        );
+
+        let queue_family_vec: Vec<u32> = HashSet::from([
+            queue_family_index.graphics_family.unwrap(),
+            queue_family_index.present_family.unwrap(),
+        ])
+        .into_iter()
+        .collect();
+
+        if queue_family_vec.len() > 1 {
+            create_info = create_info
+                .image_sharing_mode(vk::SharingMode::CONCURRENT)
+                .queue_family_indices(&queue_family_vec);
+        } else {
+            create_info = create_info.image_sharing_mode(vk::SharingMode::EXCLUSIVE);
+        };
+
+        self.swapchain_loader = Some(ash::khr::swapchain::Device::new(
+            self.instance.as_ref().unwrap(),
+            self.logical_device.as_ref().unwrap(),
+        ));
+
+        self.swap_chain = unsafe {
+            self.swapchain_loader
+                .as_ref()
+                .unwrap()
+                .create_swapchain(&create_info, None)
+        }
+        .map_err(|e| GraphicsError::VulkanError(format!("Failed to create swap chain: {:?}", e)))?
+        .into();
+
+        self.images = unsafe {
+            self.swapchain_loader
+                .as_ref()
+                .unwrap()
+                .get_swapchain_images(self.swap_chain.unwrap())
+        }
+        .map_err(|e| {
+            GraphicsError::VulkanError(format!("Failed to get swap chain images: {:?}", e))
+        })?;
+
+        self.swap_chain_format = Some(surface_format);
+        self.swap_chain_present_mode = Some(present_mode);
+        self.swap_chain_extent = Some(extent);
+        Ok(())
+    }
+
     fn destroy_vulkan(&mut self) {
+        self.destroy_swap_chain();
         self.destroy_logical_device();
         self.destroy_debug_messenger();
         if let Some(instance) = &self.instance {
@@ -403,6 +540,22 @@ impl VulkanGraphics {
             }
             self.instance = None;
             println!("Vulkan instance destroyed");
+        }
+    }
+
+    fn destroy_swap_chain(&mut self) {
+        self.swap_chain_format = None;
+        self.swap_chain_present_mode = None;
+        self.swap_chain_extent = None;
+        self.images.clear();
+        if let Some(swap_chain) = self.swap_chain {
+            unsafe {
+                self.swapchain_loader
+                    .as_ref()
+                    .unwrap()
+                    .destroy_swapchain(swap_chain, None);
+            }
+            self.swap_chain = None;
         }
     }
 }
@@ -417,7 +570,7 @@ impl GraphicsBackend for VulkanGraphics {
         width: u32,
         height: u32,
     ) -> GraphicsResult<()> {
-        self.init_vulkan(window)?;
+        self.init_vulkan(window, width, height)?;
         println!("Vulkan can create surface with size {}x{}", width, height);
         Ok(())
     }

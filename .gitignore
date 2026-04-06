@@ -21,3 +21,4 @@ target/
 # Added by cargo
 
 /target
+/assets/shaders

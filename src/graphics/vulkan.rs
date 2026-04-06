@@ -4,7 +4,7 @@ use winit::raw_window_handle::{self, HasDisplayHandle};
 
 use super::GraphicsBackend;
 use crate::graphics::{GraphicsError, GraphicsResult};
-use std::{collections::HashSet, ffi::CStr};
+use std::{collections::HashSet, ffi::CStr, path::Path};
 
 struct QueueFamilyIndices {
     graphics_family: Option<u32>,
@@ -46,9 +46,17 @@ pub struct VulkanGraphics {
 
     debug_util: Option<ash::ext::debug_utils::Instance>,
     debug_messenger: Option<ash::vk::DebugUtilsMessengerEXT>,
+
+    shader_path: Option<String>,
 }
 
 impl VulkanGraphics {
+    pub fn set_shader_path(mut self, path: &Path) -> Self {
+        println!("Setting shader path to: {}", path.display());
+        self.shader_path = Some(path.to_string_lossy().to_string());
+        self
+    }
+
     fn init_vulkan<
         W: raw_window_handle::HasWindowHandle,
         D: raw_window_handle::HasDisplayHandle,

@@ -14,7 +14,7 @@ fn main() {
     if shader_out_dir.exists() {
         fs::remove_dir_all(&shader_out_dir).unwrap();
     }
-    fs::create_dir(&shader_out_dir).unwrap();
+    fs::create_dir_all(&shader_out_dir).unwrap();
 
     println!("cargo::rustc-env=SHADER_OUT_DIR={}", SHADER_OUT_DIR_NAME);
 
@@ -27,12 +27,11 @@ fn main() {
             continue;
         }
         let ext = path.extension().unwrap();
-        let shader_kind;
-        match ext.to_str().unwrap() {
-            "vert" => shader_kind = shaderc::ShaderKind::Vertex,
-            "frag" => shader_kind = shaderc::ShaderKind::Fragment,
+        let shader_kind = match ext.to_str().unwrap() {
+            "vert" => shaderc::ShaderKind::Vertex,
+            "frag" => shaderc::ShaderKind::Fragment,
             _ => continue,
-        }
+        };
 
         let file_name = path.file_name().unwrap();
         let binary_shader_path = shader_out_dir.join(file_name).with_added_extension("spv");

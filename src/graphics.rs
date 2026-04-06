@@ -39,4 +39,14 @@ pub enum GraphicsError {
     VulkanError(String),
 }
 
+impl std::fmt::Display for GraphicsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            GraphicsError::VulkanError(msg) => write!(f, "Vulkan error: {}", msg),
+        }
+    }
+}
+
+impl std::error::Error for GraphicsError {}
+
 pub type GraphicsResult<T> = Result<T, GraphicsError>;

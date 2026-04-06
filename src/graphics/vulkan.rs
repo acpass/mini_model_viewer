@@ -4,7 +4,19 @@ use winit::raw_window_handle::{self, HasDisplayHandle};
 
 use super::GraphicsBackend;
 use crate::graphics::{GraphicsError, GraphicsResult};
-use std::{collections::HashSet, ffi::CStr, path::Path};
+use std::{collections::HashSet, ffi::CStr, io, path::Path};
+
+impl From<vk::Result> for GraphicsError {
+    fn from(result: vk::Result) -> Self {
+        GraphicsError::VulkanError(format!("Vulkan error: {:?}", result))
+    }
+}
+
+impl From<io::Error> for GraphicsError {
+    fn from(error: std::io::Error) -> Self {
+        GraphicsError::VulkanError(format!("IO error: {:?}", error))
+    }
+}
 
 struct QueueFamilyIndices {
     graphics_family: Option<u32>,
@@ -43,6 +55,7 @@ pub struct VulkanGraphics {
     swap_chain_extent: Option<vk::Extent2D>,
 
     image_views: Vec<vk::ImageView>,
+    render_pass: Option<vk::RenderPass>,
 
     debug_util: Option<ash::ext::debug_utils::Instance>,
     debug_messenger: Option<ash::vk::DebugUtilsMessengerEXT>,
@@ -75,6 +88,8 @@ impl VulkanGraphics {
         self.init_queue()?;
         self.create_swap_chain(width, height)?;
         self.create_image_views()?;
+        self.create_render_pass()?;
+        self.create_pipeline()?;
         Ok(())
     }
 
@@ -85,20 +100,15 @@ impl VulkanGraphics {
         &mut self,
         handle: &super::WindowHandlePara<W, D>,
     ) -> GraphicsResult<()> {
-        self.surface = Some(
-            unsafe {
-                ash_window::create_surface(
-                    self.entry.as_ref().unwrap(),
-                    self.instance.as_ref().unwrap(),
-                    handle.display.display_handle().unwrap().as_raw(),
-                    handle.window.window_handle().unwrap().as_raw(),
-                    None,
-                )
-            }
-            .map_err(|e| {
-                GraphicsError::VulkanError(format!("Failed to create surface: {:?}", e))
-            })?,
-        );
+        self.surface = Some(unsafe {
+            ash_window::create_surface(
+                self.entry.as_ref().unwrap(),
+                self.instance.as_ref().unwrap(),
+                handle.display.display_handle().unwrap().as_raw(),
+                handle.window.window_handle().unwrap().as_raw(),
+                None,
+            )
+        }?);
         println!(
             "Vulkan surface created successfully: {:?}",
             self.surface.unwrap()
@@ -155,7 +165,7 @@ impl VulkanGraphics {
         let mut flags = ash::vk::InstanceCreateFlags::empty();
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
-            flags = flags | ash::vk::InstanceCreateFlags::ENUMERATE_PORTABILITY_KHR;
+            flags |= ash::vk::InstanceCreateFlags::ENUMERATE_PORTABILITY_KHR;
         }
         flags
     }
@@ -252,38 +262,14 @@ impl VulkanGraphics {
         surface: vk::SurfaceKHR,
         surface_loader: &ash::khr::surface::Instance,
     ) -> GraphicsResult<SwapChainSupportDetails> {
-        let capabilities = unsafe {
-            surface_loader
-                .get_physical_device_surface_capabilities(device, surface)
-                .map_err(|e| {
-                    GraphicsError::VulkanError(format!(
-                        "Failed to get swap chain capabilities: {:?}",
-                        e
-                    ))
-                })
-        }?;
+        let capabilities =
+            unsafe { surface_loader.get_physical_device_surface_capabilities(device, surface)? };
 
-        let formats = unsafe {
-            surface_loader
-                .get_physical_device_surface_formats(device, surface)
-                .map_err(|e| {
-                    GraphicsError::VulkanError(format!(
-                        "Failed to get swap chain surface formats: {:?}",
-                        e
-                    ))
-                })
-        }?;
+        let formats =
+            unsafe { surface_loader.get_physical_device_surface_formats(device, surface)? };
 
-        let present_modes = unsafe {
-            surface_loader
-                .get_physical_device_surface_present_modes(device, surface)
-                .map_err(|e| {
-                    GraphicsError::VulkanError(format!(
-                        "Failed to get swap chain present modes: {:?}",
-                        e
-                    ))
-                })
-        }?;
+        let present_modes =
+            unsafe { surface_loader.get_physical_device_surface_present_modes(device, surface)? };
         Ok(SwapChainSupportDetails {
             capabilities,
             formats,
@@ -322,23 +308,25 @@ impl VulkanGraphics {
     }
 
     fn pick_physical_device(&mut self) -> GraphicsResult<()> {
-        unsafe { self.instance.as_ref().unwrap().enumerate_physical_devices() }
-            .map_err(|e| {
-                GraphicsError::VulkanError(format!("Failed to enumerate physical devices: {:?}", e))
-            })?
-            .into_iter()
-            .find(|&device| {
-                self.is_device_suitable(
-                    device,
-                    self.surface.unwrap(),
-                    self.surface_loader.as_ref().unwrap(),
-                )
-            })
-            .ok_or_else(|| GraphicsError::VulkanError("Failed to find a suitable GPU".to_string()))
-            .map(|device| {
-                self.physical_device = Some(device);
-                println!("Selected physical device: {:?}", device);
-            })
+        unsafe {
+            self.instance
+                .as_ref()
+                .unwrap()
+                .enumerate_physical_devices()?
+        }
+        .into_iter()
+        .find(|&device| {
+            self.is_device_suitable(
+                device,
+                self.surface.unwrap(),
+                self.surface_loader.as_ref().unwrap(),
+            )
+        })
+        .ok_or_else(|| GraphicsError::VulkanError("Failed to find a suitable GPU".to_string()))
+        .map(|device| {
+            self.physical_device = Some(device);
+            println!("Selected physical device: {:?}", device);
+        })
     }
 
     fn init_logical_device(&mut self) -> GraphicsResult<()> {
@@ -368,15 +356,11 @@ impl VulkanGraphics {
             .queue_create_infos(&device_queue_create_info)
             .enabled_extension_names(&device_extensions);
         self.logical_device = Some(unsafe {
-            self.instance
-                .as_ref()
-                .unwrap()
-                .create_device(self.physical_device.unwrap(), &create_info, None)
-                .map_err(|e| {
-                    GraphicsError::VulkanError(
-                        format!("Failed to create logical device, error code: {:?}", e).to_string(),
-                    )
-                })?
+            self.instance.as_ref().unwrap().create_device(
+                self.physical_device.unwrap(),
+                &create_info,
+                None,
+            )?
         });
         Ok(())
     }
@@ -520,20 +504,16 @@ impl VulkanGraphics {
             self.swapchain_loader
                 .as_ref()
                 .unwrap()
-                .create_swapchain(&create_info, None)
+                .create_swapchain(&create_info, None)?
         }
-        .map_err(|e| GraphicsError::VulkanError(format!("Failed to create swap chain: {:?}", e)))?
         .into();
 
         self.images = unsafe {
             self.swapchain_loader
                 .as_ref()
                 .unwrap()
-                .get_swapchain_images(self.swap_chain.unwrap())
-        }
-        .map_err(|e| {
-            GraphicsError::VulkanError(format!("Failed to get swap chain images: {:?}", e))
-        })?;
+                .get_swapchain_images(self.swap_chain.unwrap())?
+        };
 
         self.swap_chain_format = Some(surface_format);
         self.swap_chain_present_mode = Some(present_mode);
@@ -581,12 +561,96 @@ impl VulkanGraphics {
                 self.logical_device
                     .as_ref()
                     .unwrap()
-                    .create_image_view(&create_info, None)
-            }
-            .map_err(|e| {
-                GraphicsError::VulkanError(format!("Failed to create image view: {:?}", e))
-            })?;
+                    .create_image_view(&create_info, None)?
+            };
             self.image_views.push(image_view);
+        }
+        Ok(())
+    }
+
+    fn read_shader_code(path: &str) -> GraphicsResult<Vec<u8>> {
+        Ok(std::fs::read(path)?)
+    }
+
+    fn create_shader_module(device: &ash::Device, code: &[u8]) -> GraphicsResult<vk::ShaderModule> {
+        let create_info = vk::ShaderModuleCreateInfo::default().code(unsafe {
+            std::slice::from_raw_parts(
+                code.as_ptr() as *const u32,
+                code.len() / std::mem::size_of::<u32>(),
+            )
+        });
+        Ok(unsafe { device.create_shader_module(&create_info, None)? })
+    }
+
+    fn create_render_pass(&mut self) -> GraphicsResult<()> {
+        let color_attachment = [vk::AttachmentDescription::default()
+            .format(self.swap_chain_format.unwrap().format)
+            .samples(vk::SampleCountFlags::TYPE_1)
+            .load_op(vk::AttachmentLoadOp::CLEAR)
+            .store_op(vk::AttachmentStoreOp::STORE)
+            .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
+            .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
+            .initial_layout(vk::ImageLayout::UNDEFINED)
+            .final_layout(vk::ImageLayout::PRESENT_SRC_KHR)];
+
+        let color_attachment_ref = [vk::AttachmentReference::default()
+            .attachment(0)
+            .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)];
+        let subpass = [vk::SubpassDescription::default()
+            .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
+            .color_attachments(&color_attachment_ref)];
+
+        let render_pass_info = vk::RenderPassCreateInfo::default()
+            .attachments(&color_attachment)
+            .subpasses(&subpass);
+
+        self.render_pass = Some(unsafe {
+            self.logical_device
+                .as_ref()
+                .unwrap()
+                .create_render_pass(&render_pass_info, None)?
+        });
+
+        Ok(())
+    }
+
+    fn create_pipeline(&mut self) -> GraphicsResult<()> {
+        let vert_shader_name = self
+            .shader_path
+            .as_ref()
+            .ok_or_else(|| GraphicsError::VulkanError("Shader path not set".to_string()))?
+            .clone()
+            + "/main.vert.spv";
+        let frag_shader_name = self
+            .shader_path
+            .as_ref()
+            .ok_or_else(|| GraphicsError::VulkanError("Shader path not set".to_string()))?
+            .clone()
+            + "/main.frag.spv";
+        let vertex_shader_module = Self::create_shader_module(
+            self.logical_device.as_ref().unwrap(),
+            &Self::read_shader_code(&vert_shader_name)?,
+        )?;
+        let fragment_shader_module = Self::create_shader_module(
+            self.logical_device.as_ref().unwrap(),
+            &Self::read_shader_code(&frag_shader_name)?,
+        )?;
+        let shader_stages = [
+            vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::VERTEX)
+                .module(vertex_shader_module)
+                .name(unsafe { CStr::from_ptr((c"main").as_ptr()) }),
+            vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::FRAGMENT)
+                .module(fragment_shader_module)
+                .name(unsafe { CStr::from_ptr((c"main").as_ptr()) }),
+        ];
+
+        for stage in shader_stages {
+            println!(
+                "Shader stage: {:?}, module: {:?}",
+                stage.stage, stage.module
+            );
         }
         Ok(())
     }

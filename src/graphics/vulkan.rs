@@ -56,6 +56,7 @@ pub struct VulkanGraphics {
 
     image_views: Vec<vk::ImageView>,
     render_pass: Option<vk::RenderPass>,
+    pipeline: Vec<vk::Pipeline>,
 
     debug_util: Option<ash::ext::debug_utils::Instance>,
     debug_messenger: Option<ash::vk::DebugUtilsMessengerEXT>,
@@ -646,12 +647,75 @@ impl VulkanGraphics {
                 .name(unsafe { CStr::from_ptr((c"main").as_ptr()) }),
         ];
 
-        for stage in shader_stages {
-            println!(
-                "Shader stage: {:?}, module: {:?}",
-                stage.stage, stage.module
-            );
-        }
+        let dynamic_state = vk::PipelineDynamicStateCreateInfo::default()
+            .dynamic_states(&[vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR]);
+
+        let vertex_input_state = vk::PipelineVertexInputStateCreateInfo::default()
+            .vertex_binding_descriptions(&[])
+            .vertex_attribute_descriptions(&[]);
+
+        let input_assembly_state = vk::PipelineInputAssemblyStateCreateInfo::default()
+            .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
+            .primitive_restart_enable(false);
+
+        let viewport_state = vk::PipelineViewportStateCreateInfo::default()
+            .scissor_count(1)
+            .viewport_count(1);
+
+        let rasterization_state = vk::PipelineRasterizationStateCreateInfo::default()
+            .depth_clamp_enable(false)
+            .rasterizer_discard_enable(false)
+            .polygon_mode(vk::PolygonMode::FILL)
+            .line_width(1.0)
+            .cull_mode(vk::CullModeFlags::BACK)
+            .front_face(vk::FrontFace::CLOCKWISE)
+            .depth_bias_enable(false);
+
+        let multisample_state = vk::PipelineMultisampleStateCreateInfo::default()
+            .rasterization_samples(vk::SampleCountFlags::TYPE_1)
+            .sample_shading_enable(false);
+
+        let color_blend_attachment = [vk::PipelineColorBlendAttachmentState::default()
+            .color_write_mask(
+                vk::ColorComponentFlags::R
+                    | vk::ColorComponentFlags::G
+                    | vk::ColorComponentFlags::B
+                    | vk::ColorComponentFlags::A,
+            )
+            .blend_enable(false)];
+        let color_blend_state = vk::PipelineColorBlendStateCreateInfo::default()
+            .logic_op_enable(false)
+            .attachments(&color_blend_attachment);
+
+        let pipeline_layout_info = vk::PipelineLayoutCreateInfo::default();
+        let pipeline_layout = unsafe {
+            self.logical_device
+                .as_ref()
+                .unwrap()
+                .create_pipeline_layout(&pipeline_layout_info, None)?
+        };
+        let pipeline_create_info = [vk::GraphicsPipelineCreateInfo::default()
+            .stages(&shader_stages)
+            .render_pass(self.render_pass.unwrap())
+            .dynamic_state(&dynamic_state)
+            .vertex_input_state(&vertex_input_state)
+            .input_assembly_state(&input_assembly_state)
+            .viewport_state(&viewport_state)
+            .rasterization_state(&rasterization_state)
+            .multisample_state(&multisample_state)
+            .color_blend_state(&color_blend_state)
+            .layout(pipeline_layout)
+            .subpass(0)];
+
+        let mut pipelines = unsafe {
+            self.logical_device
+                .as_ref()
+                .unwrap()
+                .create_graphics_pipelines(vk::PipelineCache::null(), &pipeline_create_info, None)
+                .map_err(|e| e.1)?
+        };
+        self.pipeline.append(&mut pipelines);
+        println!("Graphics pipeline created successfully");
         Ok(())
     }
 

@@ -29,7 +29,7 @@ pub trait GraphicsBackend {
         width: u32,
         height: u32,
     ) -> GraphicsResult<()>;
-    fn draw(&self);
+    fn draw(&mut self);
     fn clear(&mut self);
     fn resize(&mut self, width: u32, height: u32);
 }

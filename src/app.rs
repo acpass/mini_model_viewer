@@ -45,6 +45,7 @@ impl<G: GraphicsBackend> ApplicationHandler for App<G> {
             .can_create_surface(&window_handle, size.width, size.height)
             .inspect_err(|e| println!("Failed to create graphics surface: {:?}", e))
             .unwrap();
+        window.request_redraw();
     }
 
     fn window_event(
@@ -62,6 +63,7 @@ impl<G: GraphicsBackend> ApplicationHandler for App<G> {
             WindowEvent::RedrawRequested => {
                 self.graphics.draw();
                 println!("Window redraw requested, window id: {:?}", window_id);
+                self.window.as_ref().unwrap().request_redraw();
             }
             WindowEvent::Resized(_) => {
                 let inner_size = self.window.as_ref().unwrap().inner_size();

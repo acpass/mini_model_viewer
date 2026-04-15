@@ -948,10 +948,6 @@ impl VulkanGraphics {
                 true,
                 u64::MAX,
             )?;
-            self.logical_device
-                .as_ref()
-                .unwrap()
-                .reset_fences(&[self.frame_in_flight_fence[self.current_frame]])?;
 
             let image_index = self
                 .swapchain_loader
@@ -976,6 +972,12 @@ impl VulkanGraphics {
                 .wait_dst_stage_mask(&wait_stages)
                 .command_buffers(&command_buffers)
                 .signal_semaphores(&signal_semaphores);
+
+            self.logical_device
+                .as_ref()
+                .unwrap()
+                .reset_fences(&[self.frame_in_flight_fence[self.current_frame]])?;
+
             self.logical_device.as_ref().unwrap().queue_submit(
                 self.queues[0],
                 &[submit_info],

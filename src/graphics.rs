@@ -36,13 +36,15 @@ pub trait GraphicsBackend {
 
 #[derive(Debug)]
 pub enum GraphicsError {
-    VulkanError(String),
+    VulkanError(String, i32),
 }
 
 impl std::fmt::Display for GraphicsError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            GraphicsError::VulkanError(msg) => write!(f, "Vulkan error: {}", msg),
+            GraphicsError::VulkanError(msg, result) => {
+                write!(f, "Vulkan error: {} (code: {})", msg, result)
+            }
         }
     }
 }

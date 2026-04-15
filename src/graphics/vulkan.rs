@@ -8,13 +8,22 @@ use std::{collections::HashSet, ffi::CStr, io, path::Path};
 
 impl From<vk::Result> for GraphicsError {
     fn from(result: vk::Result) -> Self {
-        GraphicsError::VulkanError(format!("Vulkan error: {:?}", result))
+        GraphicsError::VulkanError(format!("Vulkan error: {:?}", result), result.as_raw())
+    }
+}
+
+impl From<String> for GraphicsError {
+    fn from(message: String) -> Self {
+        GraphicsError::VulkanError(message, vk::Result::ERROR_UNKNOWN.as_raw())
     }
 }
 
 impl From<io::Error> for GraphicsError {
     fn from(error: std::io::Error) -> Self {
-        GraphicsError::VulkanError(format!("IO error: {:?}", error))
+        GraphicsError::VulkanError(
+            format!("IO error: {:?}", error),
+            vk::Result::ERROR_UNKNOWN.as_raw(),
+        )
     }
 }
 
@@ -72,6 +81,9 @@ pub struct VulkanGraphics {
     shader_path: Option<String>,
 
     current_frame: usize,
+
+    window_width: u32,
+    window_height: u32,
 }
 
 impl VulkanGraphics {
@@ -92,6 +104,8 @@ impl VulkanGraphics {
         width: u32,
         height: u32,
     ) -> GraphicsResult<()> {
+        self.window_width = width;
+        self.window_height = height;
         self.entry = Some(unsafe { ash::Entry::load().expect("No vulkan support") });
         self.init_instance(handle)?;
         self.setup_debug_messenger();
@@ -196,9 +210,9 @@ impl VulkanGraphics {
     ) -> GraphicsResult<()> {
         if !Self::check_layer_support(self.entry.as_ref().unwrap(), c"VK_LAYER_KHRONOS_validation")
         {
-            return Err(GraphicsError::VulkanError(
-                "Validation layer VK_LAYER_KHRONOS_validation not found".to_string(),
-            ));
+            return Err("Validation layer VK_LAYER_KHRONOS_validation not found"
+                .to_string()
+                .into());
         }
 
         let app_info = ash::vk::ApplicationInfo::default()
@@ -339,7 +353,7 @@ impl VulkanGraphics {
                 self.surface_loader.as_ref().unwrap(),
             )
         })
-        .ok_or_else(|| GraphicsError::VulkanError("Failed to find a suitable GPU".to_string()))
+        .ok_or_else(|| "Failed to find a suitable GPU".to_string().into())
         .map(|device| {
             self.physical_device = Some(device);
             println!("Selected physical device: {:?}", device);
@@ -356,9 +370,7 @@ impl VulkanGraphics {
         queue_family_index
             .is_complete()
             .then_some(())
-            .ok_or_else(|| {
-                GraphicsError::VulkanError("Failed to find suitable queue families".to_string())
-            })?;
+            .ok_or_else(|| "Failed to find suitable queue families".to_string())?;
         let unique_queue_families = HashSet::from([
             queue_family_index.graphics_family.unwrap(),
             queue_family_index.present_family.unwrap(),
@@ -555,7 +567,7 @@ impl VulkanGraphics {
     }
 
     fn create_image_views(&mut self) -> GraphicsResult<()> {
-        // Placeholder for image view creation logic
+        self.image_views = Vec::with_capacity(self.images.len());
         for &image in &self.images {
             let create_info = vk::ImageViewCreateInfo::default()
                 .image(image)
@@ -646,13 +658,13 @@ impl VulkanGraphics {
         let vert_shader_name = self
             .shader_path
             .as_ref()
-            .ok_or_else(|| GraphicsError::VulkanError("Shader path not set".to_string()))?
+            .ok_or_else(|| "Shader path not set".to_string())?
             .clone()
             + "/main.vert.spv";
         let frag_shader_name = self
             .shader_path
             .as_ref()
-            .ok_or_else(|| GraphicsError::VulkanError("Shader path not set".to_string()))?
+            .ok_or_else(|| "Shader path not set".to_string())?
             .clone()
             + "/main.frag.spv";
         let vertex_shader_module = Self::create_shader_module(
@@ -747,6 +759,7 @@ impl VulkanGraphics {
     }
 
     fn create_framebuffers(&mut self) -> GraphicsResult<()> {
+        self.framebuffer = Vec::with_capacity(self.image_views.len());
         for &image_view in &self.image_views {
             let attachments = [image_view];
             let create_info = ash::vk::FramebufferCreateInfo::default()
@@ -957,7 +970,7 @@ impl VulkanGraphics {
             let wait_semaphores = [self.wait_for_image_ready_sema[self.current_frame]];
             let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
             let signal_semaphores = [self.wait_for_draw_end_sema[self.current_frame]];
-            let command_buffers = [self.command_buffer[0]];
+            let command_buffers = [self.command_buffer[self.current_frame]];
             let submit_info = vk::SubmitInfo::default()
                 .wait_semaphores(&wait_semaphores)
                 .wait_dst_stage_mask(&wait_stages)
@@ -983,6 +996,31 @@ impl VulkanGraphics {
 
         Ok(())
     }
+
+    fn destroy_framebuffers(&mut self) {
+        for &fb in &self.framebuffer {
+            unsafe {
+                self.logical_device
+                    .as_ref()
+                    .unwrap()
+                    .destroy_framebuffer(fb, None);
+            }
+        }
+        self.framebuffer.clear();
+    }
+
+    fn recreate_swap_chain(&mut self) -> GraphicsResult<()> {
+        unsafe {
+            self.logical_device.as_ref().unwrap().device_wait_idle()?;
+        }
+        self.destroy_framebuffers();
+        self.destroy_image_views();
+        self.destroy_swap_chain();
+        self.create_swap_chain(self.window_width, self.window_height)?;
+        self.create_image_views()?;
+        self.create_framebuffers()?;
+        Ok(())
+    }
 }
 
 impl GraphicsBackend for VulkanGraphics {
@@ -1002,9 +1040,21 @@ impl GraphicsBackend for VulkanGraphics {
 
     fn draw(&mut self) {
         println!("Vulkan Draw");
-        self.draw_frame()
-            .inspect_err(|e| println!("Failed to draw frame: {:?}", e))
-            .unwrap();
+        match self.draw_frame() {
+            Ok(_) => (),
+            Err(GraphicsError::VulkanError(_, result)) => {
+                let vk_result = vk::Result::from_raw(result);
+                match vk_result {
+                    vk::Result::ERROR_OUT_OF_DATE_KHR | vk::Result::SUBOPTIMAL_KHR => {
+                        println!("Swap chain out of date, recreating...");
+                        self.recreate_swap_chain()
+                            .inspect_err(|e| println!("Failed to recreate swap chain: {:?}", e))
+                            .unwrap();
+                    }
+                    _ => println!("Failed to draw frame: Vulkan error code {}", result),
+                }
+            }
+        }
     }
 
     fn clear(&mut self) {
@@ -1013,6 +1063,11 @@ impl GraphicsBackend for VulkanGraphics {
     }
 
     fn resize(&mut self, width: u32, height: u32) {
+        self.window_width = width;
+        self.window_height = height;
+        self.recreate_swap_chain()
+            .inspect_err(|e| println!("Failed to recreate swap chain: {:?}", e))
+            .unwrap();
         println!("Vulkan Resize to {}x{}", width, height);
     }
 }

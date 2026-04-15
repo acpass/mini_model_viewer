@@ -62,17 +62,21 @@ pub struct VulkanGraphics {
     command_pool: Option<vk::CommandPool>,
     command_buffer: Vec<vk::CommandBuffer>,
 
-    frame_in_flight_fence: Option<vk::Fence>,
-    wait_for_image_ready_sema: Option<vk::Semaphore>,
-    wait_for_draw_end_sema: Option<vk::Semaphore>,
+    frame_in_flight_fence: Vec<vk::Fence>,
+    wait_for_image_ready_sema: Vec<vk::Semaphore>,
+    wait_for_draw_end_sema: Vec<vk::Semaphore>,
 
     debug_util: Option<ash::ext::debug_utils::Instance>,
     debug_messenger: Option<ash::vk::DebugUtilsMessengerEXT>,
 
     shader_path: Option<String>,
+
+    current_frame: usize,
 }
 
 impl VulkanGraphics {
+    const MAX_FRAME_IN_FLIGHT: usize = 2;
+
     pub fn set_shader_path(mut self, path: &Path) -> Self {
         println!("Setting shader path to: {}", path.display());
         self.shader_path = Some(path.to_string_lossy().to_string());
@@ -102,6 +106,7 @@ impl VulkanGraphics {
         self.create_framebuffers()?;
         self.create_command_buffer()?;
         self.create_sync_objects()?;
+        self.current_frame = 0;
         Ok(())
     }
 
@@ -780,7 +785,7 @@ impl VulkanGraphics {
 
         let command_buffer_alloc_info = vk::CommandBufferAllocateInfo::default()
             .command_pool(self.command_pool.unwrap())
-            .command_buffer_count(1)
+            .command_buffer_count(Self::MAX_FRAME_IN_FLIGHT as u32)
             .level(CommandBufferLevel::PRIMARY);
 
         self.command_buffer = unsafe {
@@ -793,38 +798,45 @@ impl VulkanGraphics {
     }
 
     fn create_sync_objects(&mut self) -> GraphicsResult<()> {
-        let semaphore_create_info = vk::SemaphoreCreateInfo::default();
-        self.wait_for_image_ready_sema = Some(unsafe {
-            self.logical_device
-                .as_ref()
-                .unwrap()
-                .create_semaphore(&semaphore_create_info, None)?
-        });
-        self.wait_for_draw_end_sema = Some(unsafe {
-            self.logical_device
-                .as_ref()
-                .unwrap()
-                .create_semaphore(&semaphore_create_info, None)?
-        });
+        for _ in 0..Self::MAX_FRAME_IN_FLIGHT {
+            let semaphore_create_info = vk::SemaphoreCreateInfo::default();
+            let wait_for_image_ready_sema = unsafe {
+                self.logical_device
+                    .as_ref()
+                    .unwrap()
+                    .create_semaphore(&semaphore_create_info, None)?
+            };
+            let wait_for_draw_end_sema = unsafe {
+                self.logical_device
+                    .as_ref()
+                    .unwrap()
+                    .create_semaphore(&semaphore_create_info, None)?
+            };
 
-        let fence_create_info =
-            vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED);
-        self.frame_in_flight_fence = Some(unsafe {
-            self.logical_device
-                .as_ref()
-                .unwrap()
-                .create_fence(&fence_create_info, None)?
-        });
+            let fence_create_info =
+                vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED);
+            let frame_in_flight_fence = unsafe {
+                self.logical_device
+                    .as_ref()
+                    .unwrap()
+                    .create_fence(&fence_create_info, None)?
+            };
+
+            self.wait_for_image_ready_sema
+                .push(wait_for_image_ready_sema);
+            self.wait_for_draw_end_sema.push(wait_for_draw_end_sema);
+            self.frame_in_flight_fence.push(frame_in_flight_fence);
+        }
         Ok(())
     }
 
     fn record_command_buffer(&mut self, image_index: usize) -> GraphicsResult<()> {
         let command_buffer_begin_info = vk::CommandBufferBeginInfo::default();
         unsafe {
-            self.logical_device
-                .as_ref()
-                .unwrap()
-                .begin_command_buffer(self.command_buffer[0], &command_buffer_begin_info)?
+            self.logical_device.as_ref().unwrap().begin_command_buffer(
+                self.command_buffer[self.current_frame],
+                &command_buffer_begin_info,
+            )?
         };
 
         let clear_values = [vk::ClearValue {
@@ -843,17 +855,17 @@ impl VulkanGraphics {
             .clear_values(&clear_values);
         unsafe {
             self.logical_device.as_ref().unwrap().cmd_begin_render_pass(
-                self.command_buffer[0],
+                self.command_buffer[self.current_frame],
                 &render_pass_begin_info,
                 vk::SubpassContents::INLINE,
             );
             self.logical_device.as_ref().unwrap().cmd_bind_pipeline(
-                self.command_buffer[0],
+                self.command_buffer[self.current_frame],
                 vk::PipelineBindPoint::GRAPHICS,
                 self.pipeline[0],
             );
             self.logical_device.as_ref().unwrap().cmd_set_viewport(
-                self.command_buffer[0],
+                self.command_buffer[self.current_frame],
                 0,
                 &[vk::Viewport {
                     x: 0.0,
@@ -865,25 +877,28 @@ impl VulkanGraphics {
                 }],
             );
             self.logical_device.as_ref().unwrap().cmd_set_scissor(
-                self.command_buffer[0],
+                self.command_buffer[self.current_frame],
                 0,
                 &[vk::Rect2D {
                     offset: vk::Offset2D { x: 0, y: 0 },
                     extent: self.swap_chain_extent.unwrap(),
                 }],
             );
+            self.logical_device.as_ref().unwrap().cmd_draw(
+                self.command_buffer[self.current_frame],
+                3,
+                1,
+                0,
+                0,
+            );
             self.logical_device
                 .as_ref()
                 .unwrap()
-                .cmd_draw(self.command_buffer[0], 3, 1, 0, 0);
+                .cmd_end_render_pass(self.command_buffer[self.current_frame]);
             self.logical_device
                 .as_ref()
                 .unwrap()
-                .cmd_end_render_pass(self.command_buffer[0]);
-            self.logical_device
-                .as_ref()
-                .unwrap()
-                .end_command_buffer(self.command_buffer[0])?;
+                .end_command_buffer(self.command_buffer[self.current_frame])?;
         }
         Ok(())
     }
@@ -916,14 +931,14 @@ impl VulkanGraphics {
     fn draw_frame(&mut self) -> GraphicsResult<()> {
         unsafe {
             self.logical_device.as_ref().unwrap().wait_for_fences(
-                &[self.frame_in_flight_fence.unwrap()],
+                &[self.frame_in_flight_fence[self.current_frame]],
                 true,
                 u64::MAX,
             )?;
             self.logical_device
                 .as_ref()
                 .unwrap()
-                .reset_fences(&[self.frame_in_flight_fence.unwrap()])?;
+                .reset_fences(&[self.frame_in_flight_fence[self.current_frame]])?;
 
             let image_index = self
                 .swapchain_loader
@@ -932,16 +947,16 @@ impl VulkanGraphics {
                 .acquire_next_image(
                     self.swap_chain.unwrap(),
                     u64::MAX,
-                    self.wait_for_image_ready_sema.unwrap(),
+                    self.wait_for_image_ready_sema[self.current_frame],
                     vk::Fence::null(),
                 )?
                 .0 as usize;
 
             self.record_command_buffer(image_index)?;
 
-            let wait_semaphores = [self.wait_for_image_ready_sema.unwrap()];
+            let wait_semaphores = [self.wait_for_image_ready_sema[self.current_frame]];
             let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
-            let signal_semaphores = [self.wait_for_draw_end_sema.unwrap()];
+            let signal_semaphores = [self.wait_for_draw_end_sema[self.current_frame]];
             let command_buffers = [self.command_buffer[0]];
             let submit_info = vk::SubmitInfo::default()
                 .wait_semaphores(&wait_semaphores)
@@ -951,7 +966,7 @@ impl VulkanGraphics {
             self.logical_device.as_ref().unwrap().queue_submit(
                 self.queues[0],
                 &[submit_info],
-                self.frame_in_flight_fence.unwrap(),
+                self.frame_in_flight_fence[self.current_frame],
             )?;
 
             let swapchains = [self.swap_chain.unwrap()];
@@ -964,6 +979,7 @@ impl VulkanGraphics {
                     .image_indices(&image_indices),
             )?;
         }
+        self.current_frame = (self.current_frame + 1) % Self::MAX_FRAME_IN_FLIGHT;
 
         Ok(())
     }

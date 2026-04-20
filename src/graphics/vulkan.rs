@@ -6,6 +6,50 @@ use super::GraphicsBackend;
 use crate::graphics::{GraphicsError, GraphicsResult};
 use std::{collections::HashSet, ffi::CStr, io, path::Path};
 
+struct Vertex {
+    pos: glm::Vec3,
+    color: glm::Vec3,
+}
+
+const vertices: [Vertex; 3] = [
+    Vertex {
+        pos: glm::vec3(0.0, -0.5, 0.0),
+        color: glm::vec3(1.0, 0.0, 0.0),
+    },
+    Vertex {
+        pos: glm::vec3(0.5, 0.5, 0.0),
+        color: glm::vec3(0.0, 1.0, 0.0),
+    },
+    Vertex {
+        pos: glm::vec3(-0.5, 0.5, 0.0),
+        color: glm::vec3(0.0, 0.0, 1.0),
+    },
+];
+
+impl Vertex {
+    fn get_vertex_binding_description() -> vk::VertexInputBindingDescription {
+        vk::VertexInputBindingDescription::default()
+            .binding(0)
+            .stride(std::mem::size_of::<Vertex>() as u32)
+            .input_rate(vk::VertexInputRate::VERTEX)
+    }
+
+    fn get_vertex_attribute_descriptions() -> [vk::VertexInputAttributeDescription; 2] {
+        [
+            vk::VertexInputAttributeDescription::default()
+                .binding(0)
+                .location(0)
+                .format(vk::Format::R32G32B32_SFLOAT)
+                .offset(std::mem::offset_of!(Vertex, pos) as u32),
+            vk::VertexInputAttributeDescription::default()
+                .binding(0)
+                .location(1)
+                .format(vk::Format::R32G32B32_SFLOAT)
+                .offset(std::mem::offset_of!(Vertex, color) as u32),
+        ]
+    }
+}
+
 impl From<vk::Result> for GraphicsError {
     fn from(result: vk::Result) -> Self {
         GraphicsError::VulkanError(format!("Vulkan error: {:?}", result), result.as_raw())
@@ -687,9 +731,11 @@ impl VulkanGraphics {
         let dynamic_state = vk::PipelineDynamicStateCreateInfo::default()
             .dynamic_states(&[vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR]);
 
+        let binding_description = [Vertex::get_vertex_binding_description()];
+        let attribute_descriptions = Vertex::get_vertex_attribute_descriptions();
         let vertex_input_state = vk::PipelineVertexInputStateCreateInfo::default()
-            .vertex_binding_descriptions(&[])
-            .vertex_attribute_descriptions(&[]);
+            .vertex_binding_descriptions(&binding_description)
+            .vertex_attribute_descriptions(&attribute_descriptions);
 
         let input_assembly_state = vk::PipelineInputAssemblyStateCreateInfo::default()
             .topology(vk::PrimitiveTopology::TRIANGLE_LIST)

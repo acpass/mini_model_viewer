@@ -11,7 +11,7 @@ struct Vertex {
     color: glm::Vec3,
 }
 
-const vertices: [Vertex; 3] = [
+const VERTICES: [Vertex; 3] = [
     Vertex {
         pos: glm::vec3(0.0, -0.5, 0.0),
         color: glm::vec3(1.0, 0.0, 0.0),
@@ -112,6 +112,9 @@ pub struct VulkanGraphics {
     pipeline: Vec<vk::Pipeline>,
     framebuffer: Vec<vk::Framebuffer>,
 
+    vertex_buffer: Option<vk::Buffer>,
+    vertex_buffer_memory: Option<vk::DeviceMemory>,
+
     command_pool: Option<vk::CommandPool>,
     command_buffer: Vec<vk::CommandBuffer>,
 
@@ -160,6 +163,9 @@ impl VulkanGraphics {
         self.create_render_pass()?;
         self.create_pipeline()?;
         self.create_framebuffers()?;
+        self.create_buffer()?;
+        self.allocate_vertex_buffer_memory()?;
+        self.fill_vertex_buffer()?;
         self.create_command_buffer()?;
         self.create_sync_objects()?;
         self.current_frame = 0;
@@ -943,9 +949,20 @@ impl VulkanGraphics {
                     extent: self.swap_chain_extent.unwrap(),
                 }],
             );
+
+            self.logical_device
+                .as_ref()
+                .unwrap()
+                .cmd_bind_vertex_buffers(
+                    self.command_buffer[self.current_frame],
+                    0,
+                    &[self.vertex_buffer.unwrap()],
+                    &[0],
+                );
+
             self.logical_device.as_ref().unwrap().cmd_draw(
                 self.command_buffer[self.current_frame],
-                3,
+                VERTICES.len() as u32,
                 1,
                 0,
                 0,
@@ -984,6 +1001,7 @@ impl VulkanGraphics {
             }
             self.destroy_sync_objects();
             self.destroy_command_buffers();
+            self.destroy_vertex_buffer();
         }
         self.destroy_framebuffers();
         self.destroy_image_views();
@@ -1113,6 +1131,118 @@ impl VulkanGraphics {
         self.create_sync_objects()?;
         self.current_frame = 0;
         Ok(())
+    }
+
+    fn create_buffer(&mut self) -> GraphicsResult<()> {
+        let buffer_info = vk::BufferCreateInfo::default()
+            .size(std::mem::size_of::<Vertex>() as u64 * VERTICES.len() as u64)
+            .usage(vk::BufferUsageFlags::VERTEX_BUFFER)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE);
+
+        self.vertex_buffer = Some(unsafe {
+            self.logical_device
+                .as_ref()
+                .unwrap()
+                .create_buffer(&buffer_info, None)?
+        });
+        Ok(())
+    }
+
+    fn find_memory_type(
+        &self,
+        type_filter: u32,
+        properties: vk::MemoryPropertyFlags,
+    ) -> GraphicsResult<u32> {
+        let mem_properties = unsafe {
+            self.instance
+                .as_ref()
+                .unwrap()
+                .get_physical_device_memory_properties(self.physical_device.unwrap())
+        };
+        mem_properties
+            .memory_types
+            .iter()
+            .enumerate()
+            .find_map(|(index, mem_type)| {
+                if (type_filter & (1 << index)) != 0 && mem_type.property_flags.contains(properties)
+                {
+                    Some(index as u32)
+                } else {
+                    None
+                }
+            })
+            .ok_or_else(|| "Failed to find suitable memory type".to_string().into())
+    }
+
+    fn allocate_vertex_buffer_memory(&mut self) -> GraphicsResult<()> {
+        let mem_requirements = unsafe {
+            self.logical_device
+                .as_ref()
+                .unwrap()
+                .get_buffer_memory_requirements(self.vertex_buffer.unwrap())
+        };
+        let memory_type_index = self.find_memory_type(
+            mem_requirements.memory_type_bits,
+            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+        )?;
+        let alloc_info = vk::MemoryAllocateInfo::default()
+            .allocation_size(mem_requirements.size)
+            .memory_type_index(memory_type_index);
+
+        self.vertex_buffer_memory = Some(unsafe {
+            self.logical_device
+                .as_ref()
+                .unwrap()
+                .allocate_memory(&alloc_info, None)?
+        });
+        unsafe {
+            self.logical_device.as_ref().unwrap().bind_buffer_memory(
+                self.vertex_buffer.unwrap(),
+                self.vertex_buffer_memory.unwrap(),
+                0,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn fill_vertex_buffer(&mut self) -> GraphicsResult<()> {
+        let data_ptr = unsafe {
+            self.logical_device.as_ref().unwrap().map_memory(
+                self.vertex_buffer_memory.unwrap(),
+                0,
+                vk::WHOLE_SIZE,
+                vk::MemoryMapFlags::empty(),
+            )?
+        } as *mut Vertex;
+        unsafe {
+            data_ptr.copy_from_nonoverlapping(VERTICES.as_ptr(), VERTICES.len());
+            self.logical_device
+                .as_ref()
+                .unwrap()
+                .unmap_memory(self.vertex_buffer_memory.unwrap());
+        }
+        Ok(())
+    }
+
+    fn destroy_vertex_buffer(&mut self) {
+        if let Some(buffer) = self.vertex_buffer {
+            unsafe {
+                self.logical_device
+                    .as_ref()
+                    .unwrap()
+                    .destroy_buffer(buffer, None);
+            }
+            self.vertex_buffer = None;
+        }
+        if let Some(memory) = self.vertex_buffer_memory {
+            unsafe {
+                self.logical_device
+                    .as_ref()
+                    .unwrap()
+                    .free_memory(memory, None);
+            }
+            self.vertex_buffer_memory = None;
+        }
     }
 }
 
